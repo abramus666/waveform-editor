@@ -1,2 +1,1 @@
-# waveform-editor
-Editor for waveforms (Python/tkinter)
+# Waveform Editor
