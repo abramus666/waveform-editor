@@ -69,13 +69,23 @@ class Curve:
 #===============================================================================
 class Wave:
 
-   def __init__(self, frequency_curve, amplitude_curve, sample_freq_hz):
+   def __init__(self, frequency_curve, amplitude_curve, waveform, sample_freq_hz):
       self.frequency_curve  = frequency_curve
       self.amplitude_curve  = amplitude_curve
       self.min_amplitude_db = amplitude_curve.y_axis.convertTo(0.0)
       self.total_time_ms    = amplitude_curve.x_axis.convertTo(1.0)
       self.sample_freq_hz   = round(sample_freq_hz)
       self.num_samples      = round(sample_freq_hz * (self.total_time_ms / 1000.0))
+      if waveform == 'Sine':
+         self.waveform_func = self.calculateWaveformSine
+      elif waveform == 'Square':
+         self.waveform_func = self.calculateWaveformSquare
+      elif waveform == 'Triangle':
+         self.waveform_func = self.calculateWaveformTriangle
+      elif waveform == 'Sawtooth':
+         self.waveform_func = self.calculateWaveformSawtooth
+      else:
+         self.waveform_func = lambda x: 0
 
    def generate(self):
       self.frequency_curve.generate()
@@ -132,6 +142,20 @@ class Wave:
          value = min(max(value, -32768), 32767)
          self.serializeInt16(value)
 
+   def calculateWaveformSine(self, x):
+      return math.sin(x * 2.0*math.pi)
+
+   def calculateWaveformSquare(self, x):
+      return (1.0 if (x < 0.5) else -1.0)
+
+   def calculateWaveformTriangle(self, x):
+      x = math.modf(x + 0.75)[0]
+      return ((1.0-4.0*x) if (x < 0.5) else (4.0*x-3.0))
+
+   def calculateWaveformSawtooth(self, x):
+      x = math.modf(x + 0.5)[0]
+      return (2.0*x - 1.0)
+
    def calculateWave(self):
       waveform_x = 0.0
       samples = [0.0 for i in range(self.num_samples)]
@@ -145,15 +169,13 @@ class Wave:
             # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
             amplitude = 10.0**(amplitude_db / 20.0)
             # Calculate waveform value.
-            waveform_y = math.sin(waveform_x)
+            waveform_y = self.waveform_func(waveform_x)
             # Scale waveform value by amplitude.
             samples[i] = (waveform_y * amplitude)
          else:
             samples[i] = 0.0
          # Calculate the next position within the waveform.
-         waveform_x += 2.0*math.pi * (frequency_hz / self.sample_freq_hz)
-         if waveform_x >= 2.0*math.pi:
-            waveform_x -= 2.0*math.pi
+         waveform_x = math.modf(waveform_x + (frequency_hz / self.sample_freq_hz))[0]
       return samples
 
 #===============================================================================

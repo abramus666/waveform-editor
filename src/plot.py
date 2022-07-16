@@ -197,7 +197,7 @@ class ControlPoint(Point):
       self.left = None
       self.right = None
 
-   def move(self, x, y):
+   def moveTo(self, x, y):
       x,y = self.limitCoords(x,y)
       # First and last control points can only be moved along the Y axis.
       if (self.prev is None) or (self.next is None):
@@ -210,9 +210,9 @@ class ControlPoint(Point):
       self.x = x
       self.y = y
       if self.left is not None:
-         self.left.move(self.left.x + dx, self.left.y + dy)
+         self.left.moveTo(self.left.x + dx, self.left.y + dy)
       if self.right is not None:
-         self.right.move(self.right.x + dx, self.right.y + dy)
+         self.right.moveTo(self.right.x + dx, self.right.y + dy)
       super().refreshPosition()
 
 #===============================================================================
@@ -231,7 +231,7 @@ class CurvePoint(Point):
       self.parent = parent
       self.refreshPosition()
 
-   def move(self, x, y):
+   def moveTo(self, x, y):
       x,y = self.limitCoords(x,y)
       # Curve points cannot cross the X value of their control point.
       if self is self.parent.left:
@@ -245,18 +245,19 @@ class CurvePoint(Point):
 #===============================================================================
 class Panel:
 
-   def __init__(self, parent, row, column, width, height, x_axis, y_axis):
-      self.parent = parent
+   def __init__(self, tk_parent, width, height, x_axis, y_axis, callback):
       self.width  = width
       self.height = height
       self.x_axis = x_axis
       self.y_axis = y_axis
+      self.on_curve_change = callback
+      self.on_view_change = None
+      self.mouse_pos = None
       # Parameters to allow zooming of the X axis.
       self.x_start = 0.0
       self.x_stop  = 1.0
       # Frame.
-      self.frame = ttk.Frame(parent.getTk())
-      self.frame.grid(row = row, column = column, sticky = 'NSEW')
+      self.frame = ttk.Frame(tk_parent)
       self.frame.columnconfigure(0, weight = 1)
       self.frame.rowconfigure(0, weight = 1)
       # Canvas.
@@ -280,10 +281,10 @@ class Panel:
       self.curve_lines = []
       self.drawCurveLines()
       # Grid.
-      self.grid = Grid(self)
-      self.grid.draw()
+      self.plot_grid = Grid(self)
+      self.plot_grid.draw()
       # Context menu.
-      self.createMenu(parent)
+      self.createMenu(tk_parent)
 
    #----------------------------------------------------------------------------
 
@@ -317,7 +318,7 @@ class Panel:
       y = (1.0 - (py / self.height)) * (1.0 + 2.0*Y_MARGIN_REL) - Y_MARGIN_REL
       return (x,y)
 
-   def calculateZoom(self, x, multiplier):
+   def calculateViewZoom(self, x, multiplier):
       x_range = [self.x_start, self.x_stop]
       new_zoom = multiplier / (x_range[1] - x_range[0])
       if new_zoom <= ZOOM_MAX:
@@ -330,18 +331,29 @@ class Panel:
          d = x_range[1] - x_range[0]
          if d > 1.0:
             x_range = (0.0, 1.0)
-         elif self.x_start < 0.0:
+         elif x_range[0] < 0.0:
             x_range = (0.0, d)
-         elif self.x_stop > 1.0:
+         elif x_range[1] > 1.0:
             x_range = (1.0-d, 1.0)
+      return x_range
+
+   def calculateViewMove(self, dx):
+      x_range = [self.x_start, self.x_stop]
+      x_range[0] -= dx
+      x_range[1] -= dx
+      d = x_range[1] - x_range[0]
+      if x_range[0] < 0.0:
+         x_range = (0.0, d)
+      if x_range[1] > 1.0:
+         x_range = (1.0-d, 1.0)
       return x_range
 
    #----------------------------------------------------------------------------
 
-   def createMenu(self, parent):
+   def createMenu(self, tk_parent):
       self.cmd_coords = None
       self.cmd_point = None
-      self.cmd_menu = tk.Menu(parent.getTk(), tearoff = 0)
+      self.cmd_menu = tk.Menu(tk_parent, tearoff = 0)
       self.cmd_menu.add_command(
          label = 'Add point',
          command = lambda: self.addControlPoint(*self.cmd_coords))
@@ -373,25 +385,36 @@ class Panel:
 
    def onMouse1Press(self, event):
       self.grabPoint(self.selected_point)
+      self.mouse_pos = (event.x, event.y)
 
    def onMouse1Release(self, event):
       if self.grabbed_point is not None:
-         self.parent.onCurveChange()
+         self.on_curve_change()
       self.ungrabPoint()
 
    def onMouse1Motion(self, event):
       if self.grabbed_point is not None:
-         self.grabbed_point.move(*self.pixels2coords(event.x, event.y))
+         self.grabbed_point.moveTo(*self.pixels2coords(event.x, event.y))
          self.drawCurveLines()
+      else:
+         x0,y0 = self.pixels2coords(self.mouse_pos[0], self.mouse_pos[1])
+         x1,y1 = self.pixels2coords(event.x, event.y)
+         x_range = self.calculateViewMove(x1 - x0)
+         # Update view, and notify of the change.
+         self.setView(x_range)
+         self.on_view_change(x_range)
+      # Update saved maouse position.
+      self.mouse_pos = (event.x, event.y)
 
    def onMouseWheel(self, event):
       x,y = self.pixels2coords(event.x, event.y)
       if event.delta > 0:
-         x_range = self.calculateZoom(x, ZOOM_MULTIPLIER)
+         x_range = self.calculateViewZoom(x, ZOOM_MULTIPLIER)
       else:
-         x_range = self.calculateZoom(x, 1.0 / ZOOM_MULTIPLIER)
-      # Zoom is only performed if the parent calls "setView".
-      self.parent.onViewChangeRequest(x_range)
+         x_range = self.calculateViewZoom(x, 1.0 / ZOOM_MULTIPLIER)
+      # Update view, and notify of the change.
+      self.setView(x_range)
+      self.on_view_change(x_range)
 
    #----------------------------------------------------------------------------
 
@@ -424,13 +447,13 @@ class Panel:
          if (x < cur_point.x) or (cur_point.next is None):
             new_point.spawn(cur_point.prev, cur_point, x, y)
             break
-      # Notify parent of the change, and re-draw curve.
-      self.parent.onCurveChange()
+      # Re-draw curve, and notify of the change.
       self.drawCurveLines()
+      self.on_curve_change()
 
    def deleteControlPoint(self, point):
       point.delete()
-      self.parent.onCurveChange()
+      self.on_curve_change()
       self.drawCurveLines()
 
    def isDeletable(self, point_to_check):
@@ -465,7 +488,7 @@ class Panel:
          self.canvas.delete(self.curve_lines.pop())
 
    def refreshPositions(self):
-      self.grid.draw()
+      self.plot_grid.draw()
       self.drawCurveLines()
       point = self.control_points
       while point is not None:
@@ -473,6 +496,15 @@ class Panel:
          point = point.next
 
    #----------------------------------------------------------------------------
+
+   def grid(self, **kwargs):
+      self.frame.grid(**kwargs)
+
+   def updateGrid(self):
+      self.plot_grid.draw()
+
+   def installViewChangeCallback(self, callback):
+      self.on_view_change = callback
 
    def setView(self, x_range):
       self.x_start = x_range[0]
