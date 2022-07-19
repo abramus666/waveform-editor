@@ -98,9 +98,9 @@ class Wave:
          # Function to calculate waveform.
          self.setupWaveformFunc(input_wave['Waveform'])
          # Function to calculate/get sample.
-         self.calculate = self.calculateNextSample
+         self.sample_func = self.calculateNextSample
       else:
-         self.calculate = self.getNextSample
+         self.sample_func = self.getNextSample
       # Reset position within wave.
       self.sample_ix = 0
       self.waveform_x = 0.0
@@ -147,14 +147,17 @@ class Wave:
       else:
          sample = 0.0
       # Save sample, and calculate the next position within the waveform.
-      self.samples[self.sample_ix] = sample
+      if self.sample_ix < len(self.samples):
+         self.samples[self.sample_ix] = sample
       self.sample_ix += 1
       self.waveform_x = math.modf(self.waveform_x + (frequency_hz / self.sample_freq_hz))[0]
       return sample
 
    def getNextSample(self):
+      # Do not go out-of-bounds. Return the last sample instead.
       sample = self.samples[self.sample_ix]
-      self.sample_ix += 1
+      if self.sample_ix < len(self.samples):
+         self.sample_ix += 1
       return sample
 
 #===============================================================================
@@ -222,7 +225,7 @@ class WavFile:
 
    def serializeData(self):
       for ix in range(self.num_samples):
-         value = sum([w.calculate() for w in self.waves])
+         value = sum([w.sample_func() for w in self.waves])
          # Convert from [-1,1] to the range of 16-bit signed integer and clip.
          value = round(32767.0 * value)
          value = min(max(value, -32768), 32767)
