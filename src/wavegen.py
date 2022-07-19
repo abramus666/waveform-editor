@@ -1,4 +1,6 @@
 
+from src import axis
+
 import ctypes, math, threading, winsound
 
 POINTS_PER_CURVE = 100
@@ -6,29 +8,30 @@ POINTS_PER_CURVE = 100
 #===============================================================================
 class Curve:
 
-   def __init__(self, plot):
-      self.curves = list(plot.getCurves())
-      self.x_axis = plot.getXaxis().clone()
-      self.y_axis = plot.getYaxis().clone()
-
-   def generate(self):
+   def __init__(self, input_curve, x_axis, y_axis):
+      self.x_axis = x_axis
+      self.y_axis = y_axis
       self.points = []
-      for pt1,pt2,pt3,pt4 in self.curves:
+      for ix in range(len(input_curve)-1):
+         pt1 = input_curve[ix][1]
+         pt2 = input_curve[ix][2]
+         pt3 = input_curve[ix+1][0]
+         pt4 = input_curve[ix+1][1]
          # Current control point.
-         self.points += [(pt1.x, pt1.y)]
+         self.points.append(pt1)
          # Points between the current and next control point.
          self.points += [self.calculateCurveAt(pt1, pt2, pt3, pt4, i/POINTS_PER_CURVE) for i in range(1, POINTS_PER_CURVE)]
       # Last control point.
-      self.points += [(pt4.x, pt4.y)]
+      self.points.append(pt4)
 
    def calculateCurveAt(self, pt1, pt2, pt3, pt4, relative_pos):
       # 1st round.
-      x1 = pt2.x * relative_pos + pt1.x * (1.0 - relative_pos)
-      y1 = pt2.y * relative_pos + pt1.y * (1.0 - relative_pos)
-      x2 = pt3.x * relative_pos + pt2.x * (1.0 - relative_pos)
-      y2 = pt3.y * relative_pos + pt2.y * (1.0 - relative_pos)
-      x3 = pt4.x * relative_pos + pt3.x * (1.0 - relative_pos)
-      y3 = pt4.y * relative_pos + pt3.y * (1.0 - relative_pos)
+      x1 = pt2[0] * relative_pos + pt1[0] * (1.0 - relative_pos)
+      y1 = pt2[1] * relative_pos + pt1[1] * (1.0 - relative_pos)
+      x2 = pt3[0] * relative_pos + pt2[0] * (1.0 - relative_pos)
+      y2 = pt3[1] * relative_pos + pt2[1] * (1.0 - relative_pos)
+      x3 = pt4[0] * relative_pos + pt3[0] * (1.0 - relative_pos)
+      y3 = pt4[1] * relative_pos + pt3[1] * (1.0 - relative_pos)
       # 2nd round.
       x1 = x2 * relative_pos + x1 * (1.0 - relative_pos)
       y1 = y2 * relative_pos + y1 * (1.0 - relative_pos)
@@ -69,13 +72,40 @@ class Curve:
 #===============================================================================
 class Wave:
 
-   def __init__(self, frequency_curve, amplitude_curve, waveform, sample_freq_hz):
-      self.frequency_curve  = frequency_curve
-      self.amplitude_curve  = amplitude_curve
-      self.min_amplitude_db = amplitude_curve.y_axis.convertTo(0.0)
-      self.total_time_ms    = amplitude_curve.x_axis.convertTo(1.0)
-      self.sample_freq_hz   = round(sample_freq_hz)
-      self.num_samples      = round(sample_freq_hz * (self.total_time_ms / 1000.0))
+   def __init__(self):
+      self.input_wave = None
+      self.sample_freq_hz = None
+
+   def setup(self, input_wave, sample_freq_hz):
+      # Samples are only calculated if the input data is different than before.
+      # Otherwise, the previously calculated samples are used.
+      if (self.input_wave != input_wave) or (self.sample_freq_hz != sample_freq_hz):
+         # Axes.
+         time_axis = axis.Time(input_wave['Time axis'])
+         frequency_axis = axis.Frequency(input_wave['Frequency axis'])
+         amplitude_axis = axis.Amplitude(input_wave['Amplitude axis'])
+         # Curves.
+         self.frequency_curve = Curve(input_wave['Frequency'], time_axis, frequency_axis)
+         self.amplitude_curve = Curve(input_wave['Amplitude'], time_axis, amplitude_axis)
+         # Other parameters.
+         self.input_wave = input_wave
+         self.sample_freq_hz = sample_freq_hz
+         self.min_amplitude_db = amplitude_axis.convertTo(0.0)
+         self.total_time_ms = time_axis.convertTo(1.0)
+         self.num_samples = round(self.sample_freq_hz * (self.total_time_ms / 1000.0))
+         # Array with samples.
+         self.samples = [0.0 for i in range(self.num_samples)]
+         # Function to calculate waveform.
+         self.setupWaveformFunc(input_wave['Waveform'])
+         # Function to calculate/get sample.
+         self.calculate = self.calculateNextSample
+      else:
+         self.calculate = self.getNextSample
+      # Reset position within wave.
+      self.sample_ix = 0
+      self.waveform_x = 0.0
+
+   def setupWaveformFunc(self, waveform):
       if waveform == 'Sine':
          self.waveform_func = self.calculateWaveformSine
       elif waveform == 'Square':
@@ -87,11 +117,66 @@ class Wave:
       else:
          self.waveform_func = lambda x: 0
 
-   def generate(self):
-      self.frequency_curve.generate()
-      self.amplitude_curve.generate()
-      self.serializeWavFileHeader()
-      self.serializeWavFileData()
+   def calculateWaveformSine(self, x):
+      return math.sin(x * 2.0*math.pi)
+
+   def calculateWaveformSquare(self, x):
+      return (1.0 if (x < 0.5) else -1.0)
+
+   def calculateWaveformTriangle(self, x):
+      x = math.modf(x + 0.75)[0]
+      return ((1.0-4.0*x) if (x < 0.5) else (4.0*x-3.0))
+
+   def calculateWaveformSawtooth(self, x):
+      x = math.modf(x + 0.5)[0]
+      return (2.0*x - 1.0)
+
+   def calculateNextSample(self):
+      # Calculate current time, frequency, and amplitude.
+      t_ms = self.total_time_ms * (self.sample_ix / (self.num_samples - 1))
+      frequency_hz = self.frequency_curve.getY(t_ms)
+      amplitude_db = self.amplitude_curve.getY(t_ms)
+      if amplitude_db > self.min_amplitude_db:
+         # Convert from dB to relative amplitude in range [0,1].
+         # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
+         amplitude = 10.0**(amplitude_db / 20.0)
+         # Calculate waveform value.
+         waveform_y = self.waveform_func(self.waveform_x)
+         # Scale waveform value by amplitude.
+         sample = (waveform_y * amplitude)
+      else:
+         sample = 0.0
+      # Save sample, and calculate the next position within the waveform.
+      self.samples[self.sample_ix] = sample
+      self.sample_ix += 1
+      self.waveform_x = math.modf(self.waveform_x + (frequency_hz / self.sample_freq_hz))[0]
+      return sample
+
+   def getNextSample(self):
+      sample = self.samples[self.sample_ix]
+      self.sample_ix += 1
+      return sample
+
+#===============================================================================
+class WavFile:
+
+   def __init__(self):
+      self.waves = []
+
+   def generate(self, input):
+      self.sample_freq_hz = round(input['Sample frequency [Hz]'])
+      self.num_samples = 0
+      # Prepare waves that will be used to generate samples.
+      while len(self.waves) < len(input['Waves']):
+         self.waves.append(Wave())
+      while len(self.waves) > len(input['Waves']):
+         self.waves.pop()
+      for wave,input_wave in zip(self.waves, input['Waves']):
+         wave.setup(input_wave, self.sample_freq_hz)
+         self.num_samples = max(self.num_samples, wave.num_samples)
+      # Generate samples from each wave, merge them, and serialize into WAV file.
+      self.serializeHeader()
+      self.serializeData()
 
    def writeToFile(self, path):
       with open(path, 'wb') as f:
@@ -114,7 +199,7 @@ class Wave:
          self.buffer[self.buffer_ix] = ord(c)
          self.buffer_ix += 1
 
-   def serializeWavFileHeader(self):
+   def serializeHeader(self):
       # Allocate buffer.
       self.buffer = ctypes.create_string_buffer(44+self.num_samples*2)
       self.buffer_ix = 0
@@ -135,48 +220,13 @@ class Wave:
       self.serializeString('data')                   # Chunk ID.
       self.serializeInt32(self.num_samples*2)        # Chunk size.
 
-   def serializeWavFileData(self):
-      for value in self.calculateWave():
+   def serializeData(self):
+      for ix in range(self.num_samples):
+         value = sum([w.calculate() for w in self.waves])
          # Convert from [-1,1] to the range of 16-bit signed integer and clip.
          value = round(32767.0 * value)
          value = min(max(value, -32768), 32767)
          self.serializeInt16(value)
-
-   def calculateWaveformSine(self, x):
-      return math.sin(x * 2.0*math.pi)
-
-   def calculateWaveformSquare(self, x):
-      return (1.0 if (x < 0.5) else -1.0)
-
-   def calculateWaveformTriangle(self, x):
-      x = math.modf(x + 0.75)[0]
-      return ((1.0-4.0*x) if (x < 0.5) else (4.0*x-3.0))
-
-   def calculateWaveformSawtooth(self, x):
-      x = math.modf(x + 0.5)[0]
-      return (2.0*x - 1.0)
-
-   def calculateWave(self):
-      waveform_x = 0.0
-      samples = [0.0 for i in range(self.num_samples)]
-      for i in range(self.num_samples):
-         # Calculate current time, frequency, and amplitude.
-         t_ms = self.total_time_ms * (i / (self.num_samples - 1))
-         frequency_hz = self.frequency_curve.getY(t_ms)
-         amplitude_db = self.amplitude_curve.getY(t_ms)
-         if amplitude_db > self.min_amplitude_db:
-            # Convert from dB to relative amplitude in range [0,1].
-            # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
-            amplitude = 10.0**(amplitude_db / 20.0)
-            # Calculate waveform value.
-            waveform_y = self.waveform_func(waveform_x)
-            # Scale waveform value by amplitude.
-            samples[i] = (waveform_y * amplitude)
-         else:
-            samples[i] = 0.0
-         # Calculate the next position within the waveform.
-         waveform_x = math.modf(waveform_x + (frequency_hz / self.sample_freq_hz))[0]
-      return samples
 
 #===============================================================================
 class CommPort:
@@ -237,7 +287,8 @@ class Thread:
 
    def waveGenThread(self):
       PlaySound = ctypes.windll.winmm.PlaySound
-      prep_wave = None
+      play_wav = WavFile()
+      prep_wav = None
       while True:
          cmd = self.port.get()
          # QUIT command: Stop playing and exit from function.
@@ -249,17 +300,16 @@ class Thread:
             PlaySound(0, 0, 0)
          # PLAY command: Generate WAV and play it from memory.
          elif cmd[0] == 'PLAY':
-            temp_wave = Wave(*cmd[1])
-            temp_wave.generate()
-            PlaySound(temp_wave.buffer, 0, winsound.SND_ASYNC | winsound.SND_LOOP | winsound.SND_MEMORY | winsound.SND_NODEFAULT)
+            play_wav.generate(cmd[1])
+            PlaySound(play_wav.buffer, 0, winsound.SND_ASYNC | winsound.SND_LOOP | winsound.SND_MEMORY | winsound.SND_NODEFAULT)
          # PREPARE command: Generate WAV and save it for later.
          elif cmd[0] == 'PREPARE':
-            prep_wave = Wave(*cmd[1])
-            prep_wave.generate()
+            prep_wav =  WavFile()
+            prep_wav.generate(cmd[1])
          # WRITE command: Write the previously generated WAV to the given file.
          elif cmd[0] == 'WRITE':
-            prep_wave.writeToFile(cmd[1])
-            prep_wave = None
+            prep_wav.writeToFile(cmd[1])
+            prep_wav = None
          # DROP command: Drop the previously generated WAV.
          elif cmd[0] == 'DROP':
-            prep_wave = None
+            prep_wav = None

@@ -148,6 +148,13 @@ class Point:
          px + POINT_RADIUS_PX,
          py + POINT_RADIUS_PX)
 
+   def serialize(self):
+      return (self.x, self.y)
+
+   def deserialize(self, input):
+      self.x = input[0]
+      self.y = input[1]
+
 #===============================================================================
 class ControlPoint(Point):
 
@@ -214,6 +221,19 @@ class ControlPoint(Point):
       if self.right is not None:
          self.right.moveTo(self.right.x + dx, self.right.y + dy)
       super().refreshPosition()
+
+   def serialize(self):
+      return (
+         self.left.serialize() if (self.left is not None) else None,
+         super().serialize(),
+         self.right.serialize() if (self.right is not None) else None)
+
+   def deserialize(self, input):
+      if self.left is not None:
+         self.left.deserialize(input[0])
+      super().deserialize(input[1])
+      if self.right is not None:
+         self.right.deserialize(input[2])
 
 #===============================================================================
 class CurvePoint(Point):
@@ -469,12 +489,12 @@ class Panel:
    #----------------------------------------------------------------------------
 
    def drawCurveLines(self):
-      ix = 0
-      for pt1,pt2,pt3,pt4 in self.getCurves():
-         px1,py1 = self.coords2pixels(pt1.x, pt1.y)
-         px2,py2 = self.coords2pixels(pt2.x, pt2.y)
-         px3,py3 = self.coords2pixels(pt3.x, pt3.y)
-         px4,py4 = self.coords2pixels(pt4.x, pt4.y)
+      curve = self.serialize()
+      for ix in range(len(curve)-1):
+         px1,py1 = self.coords2pixels(*curve[ix][1])
+         px2,py2 = self.coords2pixels(*curve[ix][2])
+         px3,py3 = self.coords2pixels(*curve[ix+1][0])
+         px4,py4 = self.coords2pixels(*curve[ix+1][1])
          # Create a new line object if necessary.
          if len(self.curve_lines) <= ix:
             self.curve_lines.append(self.canvas.create_line(0,0,0,0, smooth = 'bezier', fill = COLOR_DEFAULT))
@@ -482,9 +502,8 @@ class Panel:
          self.canvas.coords(self.curve_lines[ix], px1, py1, px2, py2, px3, py3, px4, py4)
          # Move curve lines below all points but above grid.
          self.canvas.tag_lower(self.curve_lines[ix], self.control_points.oval_id)
-         ix += 1
       # Remove redundant line objects.
-      while len(self.curve_lines) > ix:
+      while len(self.curve_lines) > len(curve)-1:
          self.canvas.delete(self.curve_lines.pop())
 
    def refreshPositions(self):
@@ -511,17 +530,36 @@ class Panel:
       self.x_stop  = x_range[1]
       self.refreshPositions()
 
-   def getCurves(self):
-      pt1 = self.control_points
-      while pt1.next is not None:
-         pt2 = pt1.right
-         pt3 = pt1.next.left
-         pt4 = pt1.next
-         yield (pt1, pt2, pt3, pt4)
-         pt1 = pt4
-
    def getXaxis(self):
       return self.x_axis
 
    def getYaxis(self):
       return self.y_axis
+
+   def serialize(self):
+      out = []
+      pt = self.control_points
+      while pt is not None:
+         out.append(pt.serialize())
+         pt = pt.next
+      return tuple(out)
+
+   def deserialize(self, input):
+      cur_point = self.control_points
+      # Deserialize all points except the last one (which needs to remain last).
+      for item in input[:-1]:
+         # This is the last existing point, we need to add a new one before it.
+         if cur_point.next is None:
+            new_point = ControlPoint(self)
+            new_point.spawn(pt.prev, pt, *item)
+         else:
+            cur_point.deserialize(item)
+            cur_point = cur_point.next
+      # Remove redundant existing points.
+      while cur_point.next is not None:
+         cur_point = cur_point.next
+         cur_point.prev.delete()
+      # Deserialize the last point.
+      cur_point.deserialize(input[-1])
+      # Re-draw curve.
+      self.drawCurveLines()
