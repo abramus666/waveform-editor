@@ -8,9 +8,7 @@ POINTS_PER_CURVE = 100
 #===============================================================================
 class Curve:
 
-   def __init__(self, input_curve, x_axis, y_axis):
-      self.x_axis = x_axis
-      self.y_axis = y_axis
+   def __init__(self, input_curve):
       self.points = []
       for ix in range(len(input_curve)-1):
          pt1 = input_curve[ix][1]
@@ -43,8 +41,6 @@ class Curve:
       return (x1, y1)
 
    def getY(self, x):
-      # Convert from X axis unit to range [0,1].
-      x = self.x_axis.convertFrom(x)
       # Binary search for rightmost element.
       left = 0
       right = len(self.points)
@@ -66,44 +62,39 @@ class Curve:
          # Linear interpolation.
          pos = (x - pt1[0]) / (pt2[0] - pt1[0])
          y = pt2[1] * pos + pt1[1] * (1.0 - pos)
-      # Convert from range [0,1] to Y axis unit.
-      return self.y_axis.convertTo(y)
+      return y
 
 #===============================================================================
 class Wave:
 
    def __init__(self):
       self.input_wave = None
+      self.num_samples = None
       self.sample_freq_hz = None
 
-   def setup(self, input_wave, sample_freq_hz):
+   def generate(self, input_wave, num_samples, sample_freq_hz):
       # Samples are only calculated if the input data is different than before.
       # Otherwise, the previously calculated samples are used.
-      if (self.input_wave != input_wave) or (self.sample_freq_hz != sample_freq_hz):
+      if (self.input_wave != input_wave or 
+          self.num_samples != num_samples or
+          self.sample_freq_hz != sample_freq_hz):
          # Axes.
-         time_axis = axis.Time(input_wave['Time axis'])
-         frequency_axis = axis.Frequency(input_wave['Frequency axis'])
-         amplitude_axis = axis.Amplitude(input_wave['Amplitude axis'])
+         self.frequency_axis = axis.Frequency(input_wave['Frequency axis'])
+         self.amplitude_axis = axis.Amplitude(input_wave['Amplitude axis'])
          # Curves.
-         self.frequency_curve = Curve(input_wave['Frequency'], time_axis, frequency_axis)
-         self.amplitude_curve = Curve(input_wave['Amplitude'], time_axis, amplitude_axis)
+         self.frequency_curve = Curve(input_wave['Frequency curve'])
+         self.amplitude_curve = Curve(input_wave['Amplitude curve'])
          # Other parameters.
          self.input_wave = input_wave
+         self.num_samples = num_samples
          self.sample_freq_hz = sample_freq_hz
-         self.min_amplitude_db = amplitude_axis.convertTo(0.0)
-         self.total_time_ms = time_axis.convertTo(1.0)
-         self.num_samples = round(self.sample_freq_hz * (self.total_time_ms / 1000.0))
-         # Array with samples.
-         self.samples = [0.0 for i in range(self.num_samples)]
+         self.min_amplitude_db = self.amplitude_axis.convertTo(0.0)
          # Function to calculate waveform.
          self.setupWaveformFunc(input_wave['Waveform'])
-         # Function to calculate/get sample.
-         self.sample_func = self.calculateNextSample
-      else:
-         self.sample_func = self.getNextSample
-      # Reset position within wave.
-      self.sample_ix = 0
-      self.waveform_x = 0.0
+         # Calculate samples.
+         self.calculateSamples()
+      # Return samples.
+      return self.samples
 
    def setupWaveformFunc(self, waveform):
       if waveform == 'Sine':
@@ -131,53 +122,49 @@ class Wave:
       x = math.modf(x + 0.5)[0]
       return (2.0*x - 1.0)
 
-   def calculateNextSample(self):
-      # Calculate current time, frequency, and amplitude.
-      t_ms = self.total_time_ms * (self.sample_ix / (self.num_samples - 1))
-      frequency_hz = self.frequency_curve.getY(t_ms)
-      amplitude_db = self.amplitude_curve.getY(t_ms)
-      if amplitude_db > self.min_amplitude_db:
-         # Convert from dB to relative amplitude in range [0,1].
-         # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
-         amplitude = 10.0**(amplitude_db / 20.0)
-         # Calculate waveform value.
-         waveform_y = self.waveform_func(self.waveform_x)
-         # Scale waveform value by amplitude.
-         sample = (waveform_y * amplitude)
-      else:
-         sample = 0.0
-      # Save sample, and calculate the next position within the waveform.
-      if self.sample_ix < len(self.samples):
-         self.samples[self.sample_ix] = sample
-      self.sample_ix += 1
-      self.waveform_x = math.modf(self.waveform_x + (frequency_hz / self.sample_freq_hz))[0]
-      return sample
-
-   def getNextSample(self):
-      # Do not go out-of-bounds. Return the last sample instead.
-      sample = self.samples[self.sample_ix]
-      if self.sample_ix < len(self.samples):
-         self.sample_ix += 1
-      return sample
+   def calculateSamples(self):
+      self.samples = [0.0 for i in range(self.num_samples)]
+      waveform_x = 0.0
+      for ix in range(self.num_samples):
+         # Calculate frequency and amplitude.
+         x = (ix / (self.num_samples - 1.0))
+         frequency_hz = self.frequency_axis.convertTo(self.frequency_curve.getY(x))
+         amplitude_db = self.amplitude_axis.convertTo(self.amplitude_curve.getY(x))
+         if amplitude_db > self.min_amplitude_db:
+            # Convert from dB to relative amplitude in range [0,1].
+            # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
+            amplitude = 10.0**(amplitude_db / 20.0)
+            # Calculate waveform value.
+            waveform_y = self.waveform_func(waveform_x)
+            # Scale waveform value by amplitude.
+            self.samples[ix] = (waveform_y * amplitude)
+         else:
+            self.samples[ix] = 0.0
+         # Calculate the next position within the waveform.
+         waveform_x = math.modf(waveform_x + (frequency_hz / self.sample_freq_hz))[0]
 
 #===============================================================================
 class WavFile:
 
    def __init__(self):
-      self.waves = []
+      # Wave objects are preserved so that it is possible
+      # to avoid generating samples when a wave is not changed.
+      self.all_waves = []
 
    def generate(self, input):
-      self.sample_freq_hz = round(input['Sample frequency [Hz]'])
-      self.num_samples = 0
+      self.total_time_ms  = input['Sound']['Total time [ms]']
+      self.sample_freq_hz = input['Sound']['Sample frequency [Hz]']
+      self.num_samples    = round(self.sample_freq_hz * (self.total_time_ms / 1000.0))
       # Prepare waves that will be used to generate samples.
-      while len(self.waves) < len(input['Waves']):
-         self.waves.append(Wave())
-      while len(self.waves) > len(input['Waves']):
-         self.waves.pop()
-      for wave,input_wave in zip(self.waves, input['Waves']):
-         wave.setup(input_wave, self.sample_freq_hz)
-         self.num_samples = max(self.num_samples, wave.num_samples)
-      # Generate samples from each wave, merge them, and serialize into WAV file.
+      while len(self.all_waves) < len(input['Waves']):
+         self.all_waves.append(Wave())
+      while len(self.all_waves) > len(input['Waves']):
+         self.all_waves.pop()
+      # Generate samples from each wave.
+      self.all_samples = []
+      for wave,input_wave in zip(self.all_waves, input['Waves']):
+         self.all_samples.append(wave.generate(input_wave, self.num_samples, self.sample_freq_hz))
+      # Merge samples from different waves, and serialize them into WAV file.
       self.serializeHeader()
       self.serializeData()
 
@@ -225,7 +212,8 @@ class WavFile:
 
    def serializeData(self):
       for ix in range(self.num_samples):
-         value = sum([w.sample_func() for w in self.waves])
+         # Merge samples from different waves.
+         value = sum([samples[ix] for samples in self.all_samples])
          # Convert from [-1,1] to the range of 16-bit signed integer and clip.
          value = round(32767.0 * value)
          value = min(max(value, -32768), 32767)

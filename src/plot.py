@@ -154,6 +154,7 @@ class Point:
    def deserialize(self, input):
       self.x = input[0]
       self.y = input[1]
+      self.refreshPosition()
 
 #===============================================================================
 class ControlPoint(Point):
@@ -551,7 +552,8 @@ class Panel:
          # This is the last existing point, we need to add a new one before it.
          if cur_point.next is None:
             new_point = ControlPoint(self)
-            new_point.spawn(pt.prev, pt, *item)
+            new_point.spawn(cur_point.prev, cur_point, 0, 0)
+            new_point.deserialize(item)
          else:
             cur_point.deserialize(item)
             cur_point = cur_point.next

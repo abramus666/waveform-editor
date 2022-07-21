@@ -25,10 +25,6 @@ class Time(Axis):
    def getUnit(self):
       return '[ms]'
 
-   # Convert from time in milliseconds to range [0,1].
-   def convertFrom(self, t):
-      return (t / self.total_time_ms)
-
    # Convert from range [0,1] to time in milliseconds.
    def convertTo(self, x):
       return (x * self.total_time_ms)
