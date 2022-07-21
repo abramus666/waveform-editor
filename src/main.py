@@ -7,7 +7,7 @@ import tkinter.ttk as ttk
 import tkinter.filedialog as tkfiledialog
 
 INTEGER_SELECT_WIDTH = 5
-INTEGER_ENTRY_WIDTH  = 8
+INTEGER_ENTRY_WIDTH  = INTEGER_SELECT_WIDTH+3
 
 #===============================================================================
 def pad(dir, north = 0, south = 0, east = 0, west = 0):
@@ -203,7 +203,7 @@ class WaveformWidget:
          item.grid(row = ix, column = 0, sticky = 'NW', **pad('EW'))
       ix = len(self.radio)
       self.custom_radio.grid(row = ix, column = 0, sticky = 'NW', **pad('EW'))
-      self.custom_btn.grid(row = ix+1, column = 0, sticky = 'NEW', **pad('SEW', east = 20))
+      self.custom_btn.grid(row = ix+1, column = 0, sticky = 'NEW', **pad('SEW', west = 18))
 
    def grid(self, **kwargs):
       self.frame.grid(**kwargs)
