@@ -274,9 +274,10 @@ class Panel:
       self.on_curve_change = callback
       self.on_view_change = None
       self.mouse_pos = None
-      # Parameters to allow zooming of the X axis.
-      self.x_start = 0.0
-      self.x_stop  = 1.0
+      # Parameters to allow zooming.
+      self.x_range = [0.0, 1.0]
+      self.y_range = [0.0, 1.0]
+      self.zoom_mode = 'X'
       # Frame.
       self.frame = ttk.Frame(tk_parent)
       self.frame.columnconfigure(0, weight = 1)
@@ -304,6 +305,9 @@ class Panel:
       # Grid.
       self.plot_grid = Grid(self)
       self.plot_grid.draw()
+      # Callbacks to update grid.
+      self.x_axis.registerCallback(self.plot_grid.draw)
+      self.y_axis.registerCallback(self.plot_grid.draw)
       # Context menu.
       self.createMenu(tk_parent)
 
@@ -316,14 +320,15 @@ class Panel:
       return round(self.height / (1.0 + 2.0*Y_MARGIN_REL))
 
    def getXcoordsRange(self):
-      return (self.x_start, self.x_stop)
+      return tuple(self.x_range)
 
    def getYcoordsRange(self):
-      return (0.0, 1.0)
+      return tuple(self.y_range)
 
    def coords2pixels(self, x, y):
-      # X axis: From [x_start, x_stop] to [0,1].
-      x = (x - self.x_start) / (self.x_stop - self.x_start)
+      # X/Y axis: From x/y_range to [0,1].
+      x = (x - self.x_range[0]) / (self.x_range[1] - self.x_range[0])
+      y = (y - self.y_range[0]) / (self.y_range[1] - self.y_range[0])
       # X axis: From [0,1] to pixels.
       px = round(x * (self.width - 2*X_MARGIN_PX) + X_MARGIN_PX)
       # Y axis: From [0,1] to pixels.
@@ -333,41 +338,42 @@ class Panel:
    def pixels2coords(self, px, py):
       # X axis: From pixels to [0,1].
       x = (px - X_MARGIN_PX) / (self.width - 2*X_MARGIN_PX)
-      # X axis: From [0,1] to [x_start, x_stop].
-      x = x * (self.x_stop - self.x_start) + self.x_start
       # Y axis: From pixels to [0,1].
       y = (1.0 - (py / self.height)) * (1.0 + 2.0*Y_MARGIN_REL) - Y_MARGIN_REL
+      # X/Y axis: From [0,1] to x/y_range.
+      x = x * (self.x_range[1] - self.x_range[0]) + self.x_range[0]
+      y = y * (self.y_range[1] - self.y_range[0]) + self.y_range[0]
       return (x,y)
 
-   def calculateViewZoom(self, x, multiplier):
-      x_range = [self.x_start, self.x_stop]
-      new_zoom = multiplier / (x_range[1] - x_range[0])
+   def calculateViewZoom(self, coord, range, multiplier):
+      new_range = range[:]
+      new_zoom = multiplier / (new_range[1] - new_range[0])
       if new_zoom <= ZOOM_MAX:
-         # Clip X to the currently visible range.
-         x = min(max(x, x_range[0]), x_range[1])
+         # Clip coordinate to the currently visible range.
+         coord = min(max(coord, new_range[0]), new_range[1])
          # Zoom in if multiplier > 1, zoom out if multiplier < 1.
-         x_range[0] += (x - x_range[0]) * (1.0 - 1.0 / multiplier)
-         x_range[1] -= (x_range[1] - x) * (1.0 - 1.0 / multiplier)
+         new_range[0] += (coord - new_range[0]) * (1.0 - 1.0 / multiplier)
+         new_range[1] -= (new_range[1] - coord) * (1.0 - 1.0 / multiplier)
          # This only applies to zoom out.
-         d = x_range[1] - x_range[0]
+         d = new_range[1] - new_range[0]
          if d > 1.0:
-            x_range = (0.0, 1.0)
-         elif x_range[0] < 0.0:
-            x_range = (0.0, d)
-         elif x_range[1] > 1.0:
-            x_range = (1.0-d, 1.0)
-      return x_range
+            new_range = (0.0, 1.0)
+         elif new_range[0] < 0.0:
+            new_range = (0.0, d)
+         elif new_range[1] > 1.0:
+            new_range = (1.0-d, 1.0)
+      return new_range
 
-   def calculateViewMove(self, dx):
-      x_range = [self.x_start, self.x_stop]
-      x_range[0] -= dx
-      x_range[1] -= dx
-      d = x_range[1] - x_range[0]
-      if x_range[0] < 0.0:
-         x_range = (0.0, d)
-      if x_range[1] > 1.0:
-         x_range = (1.0-d, 1.0)
-      return x_range
+   def calculateViewMove(self, coord_change, range):
+      new_range = range[:]
+      new_range[0] -= coord_change
+      new_range[1] -= coord_change
+      d = new_range[1] - new_range[0]
+      if new_range[0] < 0.0:
+         new_range = (0.0, d)
+      if new_range[1] > 1.0:
+         new_range = (1.0-d, 1.0)
+      return new_range
 
    #----------------------------------------------------------------------------
 
@@ -420,22 +426,30 @@ class Panel:
       else:
          x0,y0 = self.pixels2coords(self.mouse_pos[0], self.mouse_pos[1])
          x1,y1 = self.pixels2coords(event.x, event.y)
-         x_range = self.calculateViewMove(x1 - x0)
+         x_range = self.calculateViewMove(x1 - x0, self.x_range)
+         y_range = self.calculateViewMove(y1 - y0, self.y_range)
          # Update view, and notify of the change.
-         self.setView(x_range)
-         self.on_view_change(x_range)
+         self.setView(x_range, y_range)
+         self.on_view_change(x_range, y_range)
       # Update saved maouse position.
       self.mouse_pos = (event.x, event.y)
 
    def onMouseWheel(self, event):
       x,y = self.pixels2coords(event.x, event.y)
       if event.delta > 0:
-         x_range = self.calculateViewZoom(x, ZOOM_MULTIPLIER)
+         multiplier = ZOOM_MULTIPLIER
       else:
-         x_range = self.calculateViewZoom(x, 1.0 / ZOOM_MULTIPLIER)
+         multiplier = 1.0 / ZOOM_MULTIPLIER
+      # Calculate zoom.
+      x_range = self.x_range
+      y_range = self.y_range
+      if 'X' in self.zoom_mode:
+         x_range = self.calculateViewZoom(x, x_range, multiplier)
+      if 'Y' in self.zoom_mode:
+         y_range = self.calculateViewZoom(y, y_range, multiplier)
       # Update view, and notify of the change.
-      self.setView(x_range)
-      self.on_view_change(x_range)
+      self.setView(x_range, y_range)
+      self.on_view_change(x_range, y_range)
 
    #----------------------------------------------------------------------------
 
@@ -520,15 +534,14 @@ class Panel:
    def grid(self, **kwargs):
       self.frame.grid(**kwargs)
 
-   def updateGrid(self):
-      self.plot_grid.draw()
-
-   def installViewChangeCallback(self, callback):
+   def registerViewChangeCallback(self, callback):
       self.on_view_change = callback
 
-   def setView(self, x_range):
-      self.x_start = x_range[0]
-      self.x_stop  = x_range[1]
+   def setView(self, x_range, y_range):
+      if x_range is not None:
+         self.x_range = list(x_range)
+      if y_range is not None:
+         self.y_range = list(y_range)
       self.refreshPositions()
 
    def getXaxis(self):

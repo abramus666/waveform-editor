@@ -1,13 +1,24 @@
 
+#===============================================================================
+# TODO:
+# - Add widget to select zoom mode (possibly the same base object as Waveform widget).
+# - Add some kind of marker to indicate whether played sound is up-to-date.
+# - Noise waveform, disable frequency plot.
+# - Custom waveform (also morph between two waveforms).
+# - Phase shift.
+# - Undo/redo.
+#===============================================================================
+
 from src import axis, plot, wavegen
 
-import re
+import json, re
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as tkfiledialog
 
+# That gives roughly the same width for both.
 INTEGER_SELECT_WIDTH = 5
-INTEGER_ENTRY_WIDTH  = INTEGER_SELECT_WIDTH+3
+INTEGER_ENTRY_WIDTH  = 5+3
 
 #===============================================================================
 def pad(dir, north = 0, south = 0, east = 0, west = 0):
@@ -24,6 +35,7 @@ class IntegerSelect:
 
    def __init__(self, tk_parent, text, init_value, valid_values, callback):
       self.value = init_value
+      self.valid_values = valid_values
       self.callback = callback
       # String variable associated with the combobox.
       self.string_var = tk.StringVar()
@@ -46,6 +58,11 @@ class IntegerSelect:
 
    def get(self):
       return self.value
+
+   def set(self, value):
+      if value in self.valid_values:
+         self.value = value
+         self.string_var.set(str(self.value))
 
    def onUpdate(self, *args):
       v = int(self.string_var.get())
@@ -84,6 +101,11 @@ class IntegerEntry:
    def get(self):
       return self.value
 
+   def set(self, value):
+      # Apply limits.
+      self.value = min(max(int(value), self.lower_limit), self.upper_limit)
+      self.string_var.set(str(self.value))
+
    def onUpdate(self, *args):
       s = self.string_var.get()
       # Prevent user from entering non-digit characters.
@@ -114,16 +136,14 @@ class WaveListWidget:
    def __init__(self, tk_parent, min_count, max_count, callback):
       self.callback = callback
       self.min_count = min_count
-      self.count = min_count
-      self.index = 0 if (min_count > 0) else None
       # Frame.
       self.frame = ttk.LabelFrame(tk_parent, text = 'Waves', labelanchor = 'n')
       # Add/select buttons.
       self.item_btn = [ttk.Button(self.frame) for i in range(max_count)]
       # Delete button.
       self.delete_btn = ttk.Button(self.frame)
-      # Configure buttons.
-      self.configureButtons()
+      # Set item count and configure buttons appropriately.
+      self.setCount(min_count)
       # Configure inner grid.
       for ix,item in enumerate(self.item_btn):
          item.grid(row = ix, column = 0, sticky = 'NEW', **pad('NEW'))
@@ -133,6 +153,11 @@ class WaveListWidget:
    def grid(self, **kwargs):
       self.frame.grid(**kwargs)
 
+   def setCount(self, count):
+      self.count = count
+      self.index = 0 if (self.min_count > 0) else None
+      self.configureButtons()
+
    def createOnSelectFunc(self, index):
       return lambda: self.onSelect(index)
 
@@ -141,7 +166,7 @@ class WaveListWidget:
       # Buttons to select existing items.
       while ix < self.count:
          self.item_btn[ix].configure(
-            text = '#{}'.format(ix+1),
+            text = ('[ #{} ]' if (ix == self.index) else '#{}').format(ix+1),
             command = self.createOnSelectFunc(ix))
          self.item_btn[ix].state(['!disabled', 'pressed' if (ix == self.index) else '!pressed'])
          ix += 1
@@ -185,11 +210,10 @@ class WaveformWidget:
 
    def __init__(self, tk_parent, callback):
       basic_waveforms = ('Sine', 'Square', 'Triangle', 'Sawtooth')
-      self.value = basic_waveforms[0]
+      self.value = {'Type': basic_waveforms[0]}
       self.callback = callback
       # String variable associated with the radio button.
       self.string_var = tk.StringVar()
-      self.string_var.set(self.value)
       self.string_var.trace_add('write', self.onUpdate)
       # Frame.
       self.frame = ttk.LabelFrame(tk_parent, text = 'Waveform', labelanchor = 'n')
@@ -198,6 +222,8 @@ class WaveformWidget:
       # Custom waveform.
       self.custom_radio = ttk.Radiobutton(self.frame, text = 'Custom', variable = self.string_var, value = 'Custom')
       self.custom_btn = ttk.Button(self.frame, text = 'Define', state = 'disabled', command = self.onCustomDefine)
+      # Set initial value.
+      self.deserialize(self.value)
       # Configure inner grid.
       for ix,item in enumerate(self.radio):
          item.grid(row = ix, column = 0, sticky = 'NW', **pad('EW'))
@@ -213,16 +239,17 @@ class WaveformWidget:
 
    def deserialize(self, input):
       self.value = input
-      self.string_var.set(self.value)
-      self.custom_btn.configure(state = 'normal' if (self.value == 'Custom') else 'disabled')
+      self.string_var.set(self.value['Type'])
+      self.custom_btn.configure(state = 'normal' if (self.value['Type'] == 'Custom') else 'disabled')
 
    def onCustomDefine(self):
       pass
 
    def onUpdate(self, *args):
       s = self.string_var.get()
-      if self.value != s:
-         self.deserialize(s)
+      v = {'Type': s}
+      if self.value != v:
+         self.deserialize(v)
          self.callback()
 
 #===============================================================================
@@ -233,43 +260,66 @@ class SoundWidget:
       self.playing = False
       # Frame.
       self.frame = ttk.LabelFrame(tk_parent, text = 'Sound', labelanchor = 'n')
-      # Sample frequency select.
-      self.sample_freq = IntegerSelect(self.frame,
-         text         = 'Sample freq [Hz]',
+      # Sampling rate select.
+      self.sampling_rate = IntegerSelect(self.frame,
+         text         = 'Sampling rate [Hz]',
          init_value   = 44100,
          valid_values = (11025, 22050, 44100),
-         callback     = lambda v: callback.onSoundChange())
+         callback     = self.onSamplingRateChange)
       # Total time entry.
-      self.time_entry = IntegerEntry(self.frame,
+      self.total_time = IntegerEntry(self.frame,
          text        = 'Total time [ms]',
          init_value  = 500,
          lower_limit = 10,
-         upper_limit = 5000,
-         callback    = callback.onTimeChange)
+         upper_limit = 10000,
+         callback    = self.onTotalTimeChange)
+      # Axes.
+      self.time_axis = axis.Time(self.total_time.get())
+      self.frequency_axis = axis.Frequency(20, 20000)
+      self.amplitude_axis = axis.Amplitude(60)
       # Play/stop button.
       self.playstop_btn = ttk.Button(self.frame, text = 'Play', command = self.onPlayStop)
       # Export button.
       self.export_btn = ttk.Button(self.frame, text = 'Export', command = callback.onExport)
+      # Open/save buttons.
+      self.open_btn = ttk.Button(self.frame, text = 'Open', command = callback.onOpen)
+      self.save_btn = ttk.Button(self.frame, text = 'Save', command = callback.onSave)
       # Configure inner grid.
-      self.sample_freq.grid (row = 0, column = 0, sticky = 'NE', **pad('NSEW'))
-      self.time_entry.grid  (row = 1, column = 0, sticky = 'NE', **pad('SEW'))
-      self.playstop_btn.grid(row = 2, column = 0, sticky = 'NE', **pad('SEW'))
-      self.export_btn.grid  (row = 3, column = 0, sticky = 'NE', **pad('SEW'))
+      self.sampling_rate.grid(row = 0, column = 0, sticky = 'NE', **pad('NSEW'))
+      self.total_time.grid   (row = 1, column = 0, sticky = 'NE', **pad('SEW'))
+      self.playstop_btn.grid (row = 2, column = 0, sticky = 'NE', **pad('SEW'))
+      self.export_btn.grid   (row = 3, column = 0, sticky = 'NE', **pad('SEW'))
+      self.open_btn.grid     (row = 4, column = 0, sticky = 'NE', **pad('SEW'))
+      self.save_btn.grid     (row = 5, column = 0, sticky = 'NE', **pad('SEW'))
 
    def grid(self, **kwargs):
       self.frame.grid(**kwargs)
 
    def serialize(self):
       return {
-         'Sample frequency [Hz]': self.sample_freq.get(),
-         'Total time [ms]': self.time_entry.get()}
+         'Sampling rate [Hz]': self.sampling_rate.get(),
+         'Time axis': self.time_axis.serialize(),
+         'Frequency axis': self.frequency_axis.serialize(),
+         'Amplitude axis': self.amplitude_axis.serialize()}
 
    def deserialize(self, input):
-      self.sample_freq.set(input['Sample frequency [Hz]'])
-      self.time_entry.set(input['Total time [ms]'])
+      self.sampling_rate.set(input['Sampling rate [Hz]'])
+      self.time_axis.deserialize(input['Time axis'])
+      self.frequency_axis.deserialize(input['Frequency axis'])
+      self.amplitude_axis.deserialize(input['Amplitude axis'])
+      # Keep in sync with the time axis.
+      self.total_time.set(round(self.time_axis.convertTo(1.0)))
 
    def isPlaying(self):
       return self.playing
+
+   def onSamplingRateChange(self, value):
+      self.callback.onSoundChange()
+
+   def onTotalTimeChange(self, value):
+      # Keep in sync with the time entry.
+      self.time_axis.set(value)
+      self.callback.onSoundChange()
 
    def onPlayStop(self):
       if not self.playing:
@@ -295,27 +345,25 @@ class WaveformEditor:
       self.waveform_widget = WaveformWidget(self.wnd, self.onSoundChange)
       # Sound widget.
       self.sound_widget = SoundWidget(self.wnd, self)
-      # Axes.
-      self.time_axis = axis.Time(self.sound_widget.serialize())
-      self.frequency_axis = axis.Frequency(20, 20000)
-      self.amplitude_axis = axis.Amplitude(60)
       # Frequency plot.
       self.frequency_plot = plot.Panel(self.wnd,
          width    = 400,
          height   = 200,
-         x_axis   = self.time_axis,
-         y_axis   = self.frequency_axis,
+         x_axis   = self.sound_widget.time_axis,
+         y_axis   = self.sound_widget.frequency_axis,
          callback = self.onSoundChange)
       # Amplitude plot.
       self.amplitude_plot = plot.Panel(self.wnd,
          width    = 400,
          height   = 200,
-         x_axis   = self.time_axis,
-         y_axis   = self.amplitude_axis,
+         x_axis   = self.sound_widget.time_axis,
+         y_axis   = self.sound_widget.amplitude_axis,
          callback = self.onSoundChange)
-      # Keep zoom level on both plots in sync.
-      self.frequency_plot.installViewChangeCallback(lambda param: self.amplitude_plot.setView(param))
-      self.amplitude_plot.installViewChangeCallback(lambda param: self.frequency_plot.setView(param))
+      # Keep zoom level of the X axis on both plots in sync.
+      self.frequency_plot.registerViewChangeCallback(
+         lambda x_range, y_range: self.amplitude_plot.setView(x_range, None))
+      self.amplitude_plot.registerViewChangeCallback(
+         lambda x_range, y_range: self.frequency_plot.setView(x_range, None))
       # Configure grid.
       self.wnd.columnconfigure(0, weight = 0)
       self.wnd.columnconfigure(1, weight = 1)
@@ -335,20 +383,14 @@ class WaveformEditor:
 
    def serializeCurrentWave(self):
       return {
-         'Frequency axis': self.frequency_axis.serialize(),
-         'Amplitude axis': self.amplitude_axis.serialize(),
-         'Frequency curve': self.frequency_plot.serialize(),
-         'Amplitude curve': self.amplitude_plot.serialize(),
+         'Frequency': self.frequency_plot.serialize(),
+         'Amplitude': self.amplitude_plot.serialize(),
          'Waveform': self.waveform_widget.serialize()}
 
    def deserializeCurrentWave(self, input_wave):
-      self.frequency_axis.deserialize(input_wave['Frequency axis'])
-      self.amplitude_axis.deserialize(input_wave['Amplitude axis'])
-      self.frequency_plot.deserialize(input_wave['Frequency curve'])
-      self.amplitude_plot.deserialize(input_wave['Amplitude curve'])
+      self.frequency_plot.deserialize(input_wave['Frequency'])
+      self.amplitude_plot.deserialize(input_wave['Amplitude'])
       self.waveform_widget.deserialize(input_wave['Waveform'])
-      self.frequency_plot.updateGrid()
-      self.amplitude_plot.updateGrid()
 
    def serialize(self):
       self.wave_list[self.wave_index] = self.serializeCurrentWave()
@@ -358,7 +400,7 @@ class WaveformEditor:
 
    def deserialize(self, input):
       self.sound_widget.deserialize(input['Sound'])
-      self.time_axis.deserialize(input['Sound'])
+      self.wavelist_widget.setCount(len(input['Waves']))
       self.wave_list = input['Waves']
       self.wave_index = 0
       self.deserializeCurrentWave(self.wave_list[self.wave_index])
@@ -377,12 +419,6 @@ class WaveformEditor:
 
    def onWaveDelete(self, index):
       del self.wave_list[index]
-      self.onSoundChange()
-
-   def onTimeChange(self, value):
-      self.time_axis.set(value)
-      self.frequency_plot.updateGrid()
-      self.amplitude_plot.updateGrid()
       self.onSoundChange()
 
    def onSoundChange(self):
@@ -405,6 +441,25 @@ class WaveformEditor:
          self.wavegen_thread.write(path)
       else:
          self.wavegen_thread.drop()
+
+   def onOpen(self):
+      path = tkfiledialog.askopenfilename(
+         title = 'Open',
+         defaultextension = '.json',
+         filetypes = (('Waveform editor format (*.json)', '.json'),))
+      if path:
+         with open(path, 'r') as f:
+            self.deserialize(json.load(f))
+         self.onSoundChange()
+
+   def onSave(self):
+      path = tkfiledialog.asksaveasfilename(
+         title = 'Save',
+         defaultextension = '.json',
+         filetypes = (('Waveform editor format (*.json)', '.json'),))
+      if path:
+         with open(path, 'w') as f:
+            json.dump(self.serialize(), f)
 
    def run(self):
       self.wnd.mainloop()

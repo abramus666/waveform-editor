@@ -5,16 +5,25 @@ import math
 class Axis:
 
    def __init__(self, *args):
+      self.callbacks = []
       if len(args) == 1 and isinstance(args[0], dict):
          self.deserialize(args[0])
       elif len(args) > 0:
          self.set(*args)
+
+   def registerCallback(self, callback):
+      self.callbacks.append(callback)
+
+   def onUpdate(self):
+      for callback in self.callbacks:
+         callback()
 
 #===============================================================================
 class Time(Axis):
 
    def set(self, total_time_ms):
       self.total_time_ms = total_time_ms
+      self.onUpdate()
 
    def serialize(self):
       return {'Total time [ms]': self.total_time_ms}
@@ -35,6 +44,7 @@ class Frequency(Axis):
    def set(self, min_freq_hz, max_freq_hz):
       self.min_freq_hz = min_freq_hz
       self.max_freq_hz = max_freq_hz
+      self.onUpdate()
 
    def serialize(self):
       return {
@@ -58,6 +68,7 @@ class Amplitude(Axis):
 
    def set(self, amplitude_range_db):
       self.amplitude_range_db = amplitude_range_db
+      self.onUpdate()
 
    def serialize(self):
       return {'Amplitude range [dB]': self.amplitude_range_db}

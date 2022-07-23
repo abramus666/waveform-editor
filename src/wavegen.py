@@ -65,30 +65,34 @@ class Curve:
       return y
 
 #===============================================================================
+class SoundInfo:
+
+   def __init__(self, input_sound):
+      self.input_sound      = input_sound
+      self.sampling_rate_hz = input_sound['Sampling rate [Hz]']
+      self.time_axis        = axis.Time(input_sound['Time axis'])
+      self.frequency_axis   = axis.Frequency(input_sound['Frequency axis'])
+      self.amplitude_axis   = axis.Amplitude(input_sound['Amplitude axis'])
+      self.total_time_ms    = self.time_axis.convertTo(1.0)
+      self.min_amplitude_db = self.amplitude_axis.convertTo(0.0)
+      self.num_samples      = round(self.sampling_rate_hz * (self.total_time_ms / 1000.0))
+
+#===============================================================================
 class Wave:
 
    def __init__(self):
       self.input_wave = None
-      self.num_samples = None
-      self.sample_freq_hz = None
+      self.sound_info = None
 
-   def generate(self, input_wave, num_samples, sample_freq_hz):
+   def generate(self, input_wave, sound_info):
       # Samples are only calculated if the input data is different than before.
       # Otherwise, the previously calculated samples are used.
-      if (self.input_wave != input_wave or 
-          self.num_samples != num_samples or
-          self.sample_freq_hz != sample_freq_hz):
-         # Axes.
-         self.frequency_axis = axis.Frequency(input_wave['Frequency axis'])
-         self.amplitude_axis = axis.Amplitude(input_wave['Amplitude axis'])
-         # Curves.
-         self.frequency_curve = Curve(input_wave['Frequency curve'])
-         self.amplitude_curve = Curve(input_wave['Amplitude curve'])
-         # Other parameters.
+      if self.input_wave != input_wave or self.sound_info.input_sound != sound_info.input_sound:
          self.input_wave = input_wave
-         self.num_samples = num_samples
-         self.sample_freq_hz = sample_freq_hz
-         self.min_amplitude_db = self.amplitude_axis.convertTo(0.0)
+         self.sound_info = sound_info
+         # Curves.
+         self.frequency_curve = Curve(input_wave['Frequency'])
+         self.amplitude_curve = Curve(input_wave['Amplitude'])
          # Function to calculate waveform.
          self.setupWaveformFunc(input_wave['Waveform'])
          # Calculate samples.
@@ -97,13 +101,13 @@ class Wave:
       return self.samples
 
    def setupWaveformFunc(self, waveform):
-      if waveform == 'Sine':
+      if waveform['Type'] == 'Sine':
          self.waveform_func = self.calculateWaveformSine
-      elif waveform == 'Square':
+      elif waveform['Type'] == 'Square':
          self.waveform_func = self.calculateWaveformSquare
-      elif waveform == 'Triangle':
+      elif waveform['Type'] == 'Triangle':
          self.waveform_func = self.calculateWaveformTriangle
-      elif waveform == 'Sawtooth':
+      elif waveform['Type'] == 'Sawtooth':
          self.waveform_func = self.calculateWaveformSawtooth
       else:
          self.waveform_func = lambda x: 0
@@ -123,14 +127,20 @@ class Wave:
       return (2.0*x - 1.0)
 
    def calculateSamples(self):
-      self.samples = [0.0 for i in range(self.num_samples)]
+      frequency_func = self.sound_info.frequency_axis.convertTo
+      amplitude_func = self.sound_info.amplitude_axis.convertTo
+      sampling_rate_hz = self.sound_info.sampling_rate_hz
+      min_amplitude_db = self.sound_info.min_amplitude_db
+      num_samples = self.sound_info.num_samples
+      # Allocate array for samples.
+      self.samples = [0.0 for i in range(num_samples)]
       waveform_x = 0.0
-      for ix in range(self.num_samples):
+      for ix in range(num_samples):
          # Calculate frequency and amplitude.
-         x = (ix / (self.num_samples - 1.0))
-         frequency_hz = self.frequency_axis.convertTo(self.frequency_curve.getY(x))
-         amplitude_db = self.amplitude_axis.convertTo(self.amplitude_curve.getY(x))
-         if amplitude_db > self.min_amplitude_db:
+         x = (ix / (num_samples - 1.0))
+         frequency_hz = frequency_func(self.frequency_curve.getY(x))
+         amplitude_db = amplitude_func(self.amplitude_curve.getY(x))
+         if amplitude_db > min_amplitude_db:
             # Convert from dB to relative amplitude in range [0,1].
             # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
             amplitude = 10.0**(amplitude_db / 20.0)
@@ -141,7 +151,7 @@ class Wave:
          else:
             self.samples[ix] = 0.0
          # Calculate the next position within the waveform.
-         waveform_x = math.modf(waveform_x + (frequency_hz / self.sample_freq_hz))[0]
+         waveform_x = math.modf(waveform_x + (frequency_hz / sampling_rate_hz))[0]
 
 #===============================================================================
 class WavFile:
@@ -152,9 +162,7 @@ class WavFile:
       self.all_waves = []
 
    def generate(self, input):
-      self.total_time_ms  = input['Sound']['Total time [ms]']
-      self.sample_freq_hz = input['Sound']['Sample frequency [Hz]']
-      self.num_samples    = round(self.sample_freq_hz * (self.total_time_ms / 1000.0))
+      self.sound_info = SoundInfo(input['Sound'])
       # Prepare waves that will be used to generate samples.
       while len(self.all_waves) < len(input['Waves']):
          self.all_waves.append(Wave())
@@ -163,7 +171,7 @@ class WavFile:
       # Generate samples from each wave.
       self.all_samples = []
       for wave,input_wave in zip(self.all_waves, input['Waves']):
-         self.all_samples.append(wave.generate(input_wave, self.num_samples, self.sample_freq_hz))
+         self.all_samples.append(wave.generate(input_wave, self.sound_info))
       # Merge samples from different waves, and serialize them into WAV file.
       self.serializeHeader()
       self.serializeData()
@@ -190,28 +198,30 @@ class WavFile:
          self.buffer_ix += 1
 
    def serializeHeader(self):
+      sampling_rate_hz = self.sound_info.sampling_rate_hz
+      num_samples = self.sound_info.num_samples
       # Allocate buffer.
-      self.buffer = ctypes.create_string_buffer(44+self.num_samples*2)
+      self.buffer = ctypes.create_string_buffer(44+num_samples*2)
       self.buffer_ix = 0
       # Main chunk header.
-      self.serializeString('RIFF')                   # Chunk ID.
-      self.serializeInt32((44-8)+self.num_samples*2) # Chunk size.
-      self.serializeString('WAVE')                   # Riff type.
+      self.serializeString('RIFF')              # Chunk ID.
+      self.serializeInt32((44-8)+num_samples*2) # Chunk size.
+      self.serializeString('WAVE')              # Riff type.
       # Format chunk header.
-      self.serializeString('fmt ')                   # Chunk ID.
-      self.serializeInt32(16)                        # Chunk size.
-      self.serializeInt16(1)                         # Format code (PCM).
-      self.serializeInt16(1)                         # Number of channels.
-      self.serializeInt32(self.sample_freq_hz)       # Samples per second.
-      self.serializeInt32(self.sample_freq_hz*2)     # Bytes per second.
-      self.serializeInt16(2)                         # Bytes per block.
-      self.serializeInt16(16)                        # Bits per sample.
+      self.serializeString('fmt ')              # Chunk ID.
+      self.serializeInt32(16)                   # Chunk size.
+      self.serializeInt16(1)                    # Format code (PCM).
+      self.serializeInt16(1)                    # Number of channels.
+      self.serializeInt32(sampling_rate_hz)     # Samples per second.
+      self.serializeInt32(sampling_rate_hz*2)   # Bytes per second.
+      self.serializeInt16(2)                    # Bytes per block.
+      self.serializeInt16(16)                   # Bits per sample.
       # Data chunk header.
-      self.serializeString('data')                   # Chunk ID.
-      self.serializeInt32(self.num_samples*2)        # Chunk size.
+      self.serializeString('data')              # Chunk ID.
+      self.serializeInt32(num_samples*2)        # Chunk size.
 
    def serializeData(self):
-      for ix in range(self.num_samples):
+      for ix in range(self.sound_info.num_samples):
          # Merge samples from different waves.
          value = sum([samples[ix] for samples in self.all_samples])
          # Convert from [-1,1] to the range of 16-bit signed integer and clip.
