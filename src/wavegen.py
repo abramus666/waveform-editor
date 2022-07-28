@@ -1,7 +1,7 @@
 
 from src import axis
 
-import ctypes, math, threading, winsound
+import ctypes, math, random, threading, winsound
 
 POINTS_PER_CURVE = 100
 
@@ -65,6 +65,12 @@ class Curve:
       return y
 
 #===============================================================================
+class NullCurve:
+
+   def getY(self, x):
+      return 0.0
+
+#===============================================================================
 class SoundInfo:
 
    def __init__(self, input_sound):
@@ -90,27 +96,37 @@ class Wave:
       if self.input_wave != input_wave or self.sound_info.input_sound != sound_info.input_sound:
          self.input_wave = input_wave
          self.sound_info = sound_info
-         # Curves.
-         self.frequency_curve = Curve(input_wave['Frequency'])
+         # Frequency curve.
+         if input_wave['Waveform']['Type'] == 'Noise':
+            self.frequency_curve = NullCurve()
+         else:
+            self.frequency_curve = Curve(input_wave['Frequency'])
+         # Amplitude curve.
          self.amplitude_curve = Curve(input_wave['Amplitude'])
-         # Function to calculate waveform.
+         # Waveform.
          self.setupWaveformFunc(input_wave['Waveform'])
+         self.setupPhaseShift(input_wave['Waveform'])
          # Calculate samples.
          self.calculateSamples()
       # Return samples.
       return self.samples
 
-   def setupWaveformFunc(self, waveform):
-      if waveform['Type'] == 'Sine':
+   def setupWaveformFunc(self, input_waveform):
+      if input_waveform['Type'] == 'Sine':
          self.waveform_func = self.calculateWaveformSine
-      elif waveform['Type'] == 'Square':
+      elif input_waveform['Type'] == 'Square':
          self.waveform_func = self.calculateWaveformSquare
-      elif waveform['Type'] == 'Triangle':
+      elif input_waveform['Type'] == 'Triangle':
          self.waveform_func = self.calculateWaveformTriangle
-      elif waveform['Type'] == 'Sawtooth':
+      elif input_waveform['Type'] == 'Sawtooth':
          self.waveform_func = self.calculateWaveformSawtooth
+      elif input_waveform['Type'] == 'Noise':
+         self.waveform_func = self.calculateWaveformNoise
       else:
          self.waveform_func = lambda x: 0
+
+   def setupPhaseShift(self, input_waveform):
+      self.waveform_x = input_waveform.get('Phase [deg]', 0) / 360.0
 
    def calculateWaveformSine(self, x):
       return math.sin(x * 2.0*math.pi)
@@ -126,6 +142,9 @@ class Wave:
       x = math.modf(x + 0.5)[0]
       return (2.0*x - 1.0)
 
+   def calculateWaveformNoise(self, x):
+      return random.uniform(-1.0, 1.0)
+
    def calculateSamples(self):
       frequency_func = self.sound_info.frequency_axis.convertTo
       amplitude_func = self.sound_info.amplitude_axis.convertTo
@@ -134,7 +153,6 @@ class Wave:
       num_samples = self.sound_info.num_samples
       # Allocate array for samples.
       self.samples = [0.0 for i in range(num_samples)]
-      waveform_x = 0.0
       for ix in range(num_samples):
          # Calculate frequency and amplitude.
          x = (ix / (num_samples - 1.0))
@@ -145,13 +163,13 @@ class Wave:
             # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
             amplitude = 10.0**(amplitude_db / 20.0)
             # Calculate waveform value.
-            waveform_y = self.waveform_func(waveform_x)
+            waveform_y = self.waveform_func(self.waveform_x)
             # Scale waveform value by amplitude.
             self.samples[ix] = (waveform_y * amplitude)
          else:
             self.samples[ix] = 0.0
          # Calculate the next position within the waveform.
-         waveform_x = math.modf(waveform_x + (frequency_hz / sampling_rate_hz))[0]
+         self.waveform_x = math.modf(self.waveform_x + (frequency_hz / sampling_rate_hz))[0]
 
 #===============================================================================
 class WavFile:

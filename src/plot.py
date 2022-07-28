@@ -4,6 +4,8 @@ import tkinter.ttk as ttk
 
 COLOR_BACKGROUND    = '#ffffff'
 COLOR_DEFAULT       = '#000000'
+COLOR_DISABLE_LIGHT = '#eeeeee'
+COLOR_DISABLE_DARK  = '#808080'
 COLOR_GRID          = '#c0c0c0'
 COLOR_HIGHLIGHT     = '#ff0000'
 COLOR_CONTROL_POINT = '#00ff00'
@@ -129,12 +131,21 @@ class Point:
 
    def __init__(self, plot, color):
       self.plot = plot
-      self.oval_id = plot.canvas.create_oval(0,0,0,0, fill = color, outline = COLOR_DEFAULT)
-      plot.canvas.tag_bind(self.oval_id, '<Enter>', lambda evt: plot.selectPoint(self))
-      plot.canvas.tag_bind(self.oval_id, '<Leave>', lambda evt: plot.deselectPoint())
+      self.color = color
+      self.oval_id = plot.canvas.create_oval(0,0,0,0)
 
    def delete(self):
       self.plot.canvas.delete(self.oval_id)
+
+   def setEnabled(self, value):
+      if value:
+         self.plot.canvas.itemconfig(self.oval_id, fill = self.color, outline = COLOR_DEFAULT)
+         self.plot.canvas.tag_bind(self.oval_id, '<Enter>', lambda evt: self.plot.selectPoint(self))
+         self.plot.canvas.tag_bind(self.oval_id, '<Leave>', lambda evt: self.plot.deselectPoint())
+      else:
+         self.plot.canvas.itemconfig(self.oval_id, fill = COLOR_DISABLE_LIGHT, outline = COLOR_DISABLE_DARK)
+         self.plot.canvas.tag_unbind(self.oval_id, '<Enter>')
+         self.plot.canvas.tag_unbind(self.oval_id, '<Leave>')
 
    def setHighlight(self, value):
       self.plot.canvas.itemconfig(self.oval_id, outline = (COLOR_HIGHLIGHT if value else COLOR_DEFAULT))
@@ -189,6 +200,7 @@ class ControlPoint(Point):
          self.right = CurvePoint(self.plot)
          self.right.spawn(self, self.x+SPAWN_MIN_DIST_REL, self.y)
       super().refreshPosition()
+      self.setEnabled(True)
 
    def delete(self):
       if self.prev is not None:
@@ -204,6 +216,13 @@ class ControlPoint(Point):
       self.next = None
       self.left = None
       self.right = None
+
+   def setEnabled(self, value):
+      super().setEnabled(value)
+      if self.left is not None:
+         self.left.setEnabled(value)
+      if self.right is not None:
+         self.right.setEnabled(value)
 
    def moveTo(self, x, y):
       x,y = self.limitCoords(x,y)
@@ -266,18 +285,19 @@ class CurvePoint(Point):
 #===============================================================================
 class Panel:
 
-   def __init__(self, tk_parent, width, height, x_axis, y_axis, callback):
+   def __init__(self, tk_parent, width, height, x_axis, y_axis, zoom_widget, callback):
       self.width  = width
       self.height = height
       self.x_axis = x_axis
       self.y_axis = y_axis
+      self.zoom_widget = zoom_widget
       self.on_curve_change = callback
       self.on_view_change = None
       self.mouse_pos = None
+      self.enabled = True
       # Parameters to allow zooming.
       self.x_range = [0.0, 1.0]
       self.y_range = [0.0, 1.0]
-      self.zoom_mode = 'X'
       # Frame.
       self.frame = ttk.Frame(tk_parent)
       self.frame.columnconfigure(0, weight = 1)
@@ -393,10 +413,10 @@ class Panel:
       self.cmd_point = point
       # Enable the option to add a point when clicking on an empty space.
       self.cmd_menu.entryconfig(0,
-         state = 'normal' if (point is None) else 'disabled')
+         state = 'normal' if (self.enabled and point is None) else 'disabled')
       # Enable the option to delete a point when clicking on a deletable point.
       self.cmd_menu.entryconfig(1,
-         state = 'normal' if self.isDeletable(point) else 'disabled')
+         state = 'normal' if (self.enabled and self.isDeletable(point)) else 'disabled')
       # Show context menu.
       self.cmd_menu.post(event.x_root, event.y_root)
 
@@ -443,9 +463,10 @@ class Panel:
       # Calculate zoom.
       x_range = self.x_range
       y_range = self.y_range
-      if 'X' in self.zoom_mode:
+      zoom_mode =  self.zoom_widget.getZoomMode()
+      if 'X' in zoom_mode:
          x_range = self.calculateViewZoom(x, x_range, multiplier)
-      if 'Y' in self.zoom_mode:
+      if 'Y' in zoom_mode:
          y_range = self.calculateViewZoom(y, y_range, multiplier)
       # Update view, and notify of the change.
       self.setView(x_range, y_range)
@@ -512,9 +533,11 @@ class Panel:
          px4,py4 = self.coords2pixels(*curve[ix+1][1])
          # Create a new line object if necessary.
          if len(self.curve_lines) <= ix:
-            self.curve_lines.append(self.canvas.create_line(0,0,0,0, smooth = 'bezier', fill = COLOR_DEFAULT))
+            self.curve_lines.append(self.canvas.create_line(0,0,0,0, smooth = 'bezier'))
          # Setup coordinates.
          self.canvas.coords(self.curve_lines[ix], px1, py1, px2, py2, px3, py3, px4, py4)
+         # Setup color.
+         self.canvas.itemconfig(self.curve_lines[ix], fill = (COLOR_DEFAULT if self.enabled else COLOR_DISABLE_DARK))
          # Move curve lines below all points but above grid.
          self.canvas.tag_lower(self.curve_lines[ix], self.control_points.oval_id)
       # Remove redundant line objects.
@@ -533,6 +556,17 @@ class Panel:
 
    def grid(self, **kwargs):
       self.frame.grid(**kwargs)
+
+   def configure(self, **kwargs):
+      if 'state' in kwargs:
+         self.enabled = not (kwargs['state'] == 'disabled')
+         # Update color of points and bind/unbind their events.
+         point = self.control_points
+         while point is not None:
+            point.setEnabled(self.enabled)
+            point = point.next
+         # Update color of lines.
+         self.drawCurveLines()
 
    def registerViewChangeCallback(self, callback):
       self.on_view_change = callback
