@@ -10,6 +10,7 @@ class Curve:
 
    def __init__(self, input_curve):
       self.points = []
+      self.point_ix = 1
       for ix in range(len(input_curve)-1):
          pt1 = input_curve[ix][1]
          pt2 = input_curve[ix][2]
@@ -64,10 +65,23 @@ class Curve:
          y = pt2[1] * pos + pt1[1] * (1.0 - pos)
       return y
 
+   # Must be called with increasing X values.
+   # X values must not be outside of the range defined by the curve.
+   def forwardGetY(self, x):
+      # Use the last position as a starting point, and traverse forward if necessary.
+      while x > self.points[self.point_ix][0]:
+         self.point_ix += 1
+      # Get nearest points.
+      pt1 = self.points[self.point_ix-1]
+      pt2 = self.points[self.point_ix]
+      # Linear interpolation.
+      pos = (x - pt1[0]) / (pt2[0] - pt1[0])
+      return (pt2[1] * pos + pt1[1] * (1.0 - pos))
+
 #===============================================================================
 class NullCurve:
 
-   def getY(self, x):
+   def forwardGetY(self, x):
       return 0.0
 
 #===============================================================================
@@ -122,6 +136,10 @@ class Wave:
          self.waveform_func = self.calculateWaveformSawtooth
       elif input_waveform['Type'] == 'Noise':
          self.waveform_func = self.calculateWaveformNoise
+      elif input_waveform['Type'] == 'Custom':
+         self.waveform_func = self.calculateWaveformCustom
+         self.custom_curve  = Curve(input_waveform['Curve'])
+         self.custom_func   = axis.Unit().convertTo
       else:
          self.waveform_func = lambda x: 0
 
@@ -145,6 +163,9 @@ class Wave:
    def calculateWaveformNoise(self, x):
       return random.uniform(-1.0, 1.0)
 
+   def calculateWaveformCustom(self, x):
+      return self.custom_func(self.custom_curve.getY(x))
+
    def calculateSamples(self):
       frequency_func = self.sound_info.frequency_axis.convertTo
       amplitude_func = self.sound_info.amplitude_axis.convertTo
@@ -156,8 +177,8 @@ class Wave:
       for ix in range(num_samples):
          # Calculate frequency and amplitude.
          x = (ix / (num_samples - 1.0))
-         frequency_hz = frequency_func(self.frequency_curve.getY(x))
-         amplitude_db = amplitude_func(self.amplitude_curve.getY(x))
+         frequency_hz = frequency_func(self.frequency_curve.forwardGetY(x))
+         amplitude_db = amplitude_func(self.amplitude_curve.forwardGetY(x))
          if amplitude_db > min_amplitude_db:
             # Convert from dB to relative amplitude in range [0,1].
             # 20 dB change corresponds to a change in relative amplitude by a factor of 10.
@@ -279,6 +300,7 @@ class CommPort:
       return cmd
 
 #===============================================================================
+
 class Thread:
 
    def __init__(self):

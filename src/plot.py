@@ -450,7 +450,8 @@ class Panel:
          y_range = self.calculateViewMove(y1 - y0, self.y_range)
          # Update view, and notify of the change.
          self.setView(x_range, y_range)
-         self.on_view_change(x_range, y_range)
+         if self.on_view_change is not None:
+            self.on_view_change(x_range, y_range)
       # Update saved maouse position.
       self.mouse_pos = (event.x, event.y)
 
@@ -470,7 +471,8 @@ class Panel:
          y_range = self.calculateViewZoom(y, y_range, multiplier)
       # Update view, and notify of the change.
       self.setView(x_range, y_range)
-      self.on_view_change(x_range, y_range)
+      if self.on_view_change is not None:
+         self.on_view_change(x_range, y_range)
 
    #----------------------------------------------------------------------------
 
@@ -559,14 +561,16 @@ class Panel:
 
    def configure(self, **kwargs):
       if 'state' in kwargs:
-         self.enabled = not (kwargs['state'] == 'disabled')
-         # Update color of points and bind/unbind their events.
-         point = self.control_points
-         while point is not None:
-            point.setEnabled(self.enabled)
-            point = point.next
-         # Update color of lines.
-         self.drawCurveLines()
+         enabled = not (kwargs['state'] == 'disabled')
+         if self.enabled != enabled:
+            self.enabled = enabled
+            # Update color of points and bind/unbind their events.
+            point = self.control_points
+            while point is not None:
+               point.setEnabled(self.enabled)
+               point = point.next
+            # Update color of lines.
+            self.drawCurveLines()
 
    def registerViewChangeCallback(self, callback):
       self.on_view_change = callback

@@ -82,3 +82,23 @@ class Amplitude(Axis):
    # Convert from range [0,1] to amplitude in dB.
    def convertTo(self, y):
       return ((y - 1.0) * self.amplitude_range_db)
+
+#===============================================================================
+class Angle(Axis):
+
+   def getUnit(self):
+      return '[deg]'
+
+   # Convert from range [0,1] to [0,360].
+   def convertTo(self, x):
+      return (x * 360.0)
+
+#===============================================================================
+class Unit(Axis):
+
+   def getUnit(self):
+      return ''
+
+   # Convert from range [0,1] to [-1,1].
+   def convertTo(self, x):
+      return (x * 2.0 - 1.0)

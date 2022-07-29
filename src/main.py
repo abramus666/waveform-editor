@@ -10,12 +10,19 @@ PROGRAM_NAME       = 'Waveform Editor'
 
 SAMPLING_RATES_HZ  = (8000, 11025, 16000, 22050, 32000, 44100, 48000)
 MAX_WAVE_COUNT     = 8
+PLOT_WIDTH_PX      = 400
+PLOT_HEIGHT_PX     = 200
 
 MIN_TOTAL_TIME_MS  = 10
 MAX_TOTAL_TIME_MS  = 10000
 MIN_FREQUENCY_HZ   = 20
 MAX_FREQUENCY_HZ   = 20000
 AMPLITUDE_RANGE_DB = 60
+
+CUSTOM_WAVEFORM_CURVE = (
+   (None,       (0.0, 0.5), (0.0, 1.0)),
+   ((0.5, 1.0), (0.5, 0.5), (0.5, 0.0)),
+   ((1.0, 0.0), (1.0, 0.5), None))
 
 # That gives roughly the same width for both.
 INTEGER_SELECT_WIDTH = 5
@@ -233,10 +240,38 @@ class WaveListWidget:
       self.callback.onWaveDelete(self.count)
 
 #===============================================================================
+class CustomWaveformTop:
+
+   def __init__(self, tk_parent, width, height, input_curve, zoom_widget, callback):
+      self.wnd = tk.Toplevel(tk_parent)
+      self.wnd.title('Custom waveform')
+      # Waveform plot.
+      self.waveform_plot = plot.Panel(self.wnd,
+         width       = width,
+         height      = height,
+         x_axis      = axis.Angle(),
+         y_axis      = axis.Unit(),
+         zoom_widget = zoom_widget,
+         callback    = callback)
+      # Load the input curve.
+      self.deserialize(input_curve)
+      # Configure grid.
+      self.wnd.columnconfigure(0, weight = 1)
+      self.wnd.rowconfigure   (0, weight = 1)
+      self.waveform_plot.grid(column = 0, row = 0, sticky = 'NSEW')
+
+   def serialize(self):
+      return self.waveform_plot.serialize()
+
+   def deserialize(self, input_curve):
+      self.waveform_plot.deserialize(input_curve)
+
+#===============================================================================
+
 class WaveformWidget:
 
    def __init__(self, tk_parent, callback):
-      waveform_types = ('Sine', 'Square', 'Triangle', 'Sawtooth', 'Noise', 'Custom')
+      waveform_types = ('Sine', 'Triangle', 'Square', 'Sawtooth', 'Noise', 'Custom')
       self.callback = callback
       # String variable associated with the radio button.
       self.string_var = StringVariable(waveform_types[0], self.onUpdate)
@@ -259,6 +294,9 @@ class WaveformWidget:
          lower_limit = 0,
          upper_limit = 359,
          callback    = self.onUpdate)
+      # Custom waveform.
+      self.custom_curve = CUSTOM_WAVEFORM_CURVE
+      self.custom_top = None
       # Save initial value.
       self.value = self.determineValue()
       # Configure inner grid.
@@ -278,6 +316,7 @@ class WaveformWidget:
       self.value = input
       self.string_var.set(self.value['Type'])
       self.phase_shift.set(self.value.get('Phase [deg]', 0))
+      self.custom_curve = self.value.get('Curve', CUSTOM_WAVEFORM_CURVE)
       self.configureElements()
 
    def configureElements(self):
@@ -287,18 +326,32 @@ class WaveformWidget:
    def determineValue(self):
       return {
          'Type': self.string_var.get(),
-         'Phase [deg]': self.phase_shift.get()}
+         'Phase [deg]': self.phase_shift.get(),
+         'Curve': self.custom_curve}
 
    def onCustomDefine(self):
-      # TODO: Custom waveform (also morph between two waveforms).
-      pass
+      # TODO: Morph between two custom waveforms.
+      # TODO: Remember window size.
+      self.custom_top = CustomWaveformTop(self.frame,
+         width       = PLOT_WIDTH_PX,
+         height      = PLOT_HEIGHT_PX,
+         input_curve = self.custom_curve,
+         zoom_widget = self.callback.zoom_widget,
+         callback    = self.onCustomUpdate)
+
+   def onCustomUpdate(self):
+      self.custom_curve = self.custom_top.serialize()
+      v = self.determineValue()
+      if self.value != v:
+         self.value = v
+         self.callback.onSoundChange()
 
    def onUpdate(self, value):
       v = self.determineValue()
       if self.value != v:
          self.value = v
          self.configureElements()
-         self.callback()
+         self.callback.onWaveformChange()
 
 #===============================================================================
 class ZoomWidget:
@@ -434,7 +487,7 @@ class WaveformEditor:
       # Wave list widget.
       self.wavelist_widget = WaveListWidget(self.column_frames[0], 1, MAX_WAVE_COUNT, self)
       # Waveform widget.
-      self.waveform_widget = WaveformWidget(self.column_frames[2], self.onWaveformChange)
+      self.waveform_widget = WaveformWidget(self.column_frames[2], self)
       # Zoom widget.
       self.zoom_widget = ZoomWidget(self.column_frames[3])
       # File widget.
@@ -443,16 +496,16 @@ class WaveformEditor:
       self.sound_widget = SoundWidget(self.column_frames[3], self)
       # Frequency plot.
       self.frequency_plot = plot.Panel(self.column_frames[1],
-         width       = 400,
-         height      = 200,
+         width       = PLOT_WIDTH_PX,
+         height      = PLOT_HEIGHT_PX,
          x_axis      = self.sound_widget.time_axis,
          y_axis      = self.sound_widget.frequency_axis,
          zoom_widget = self.zoom_widget,
          callback    = self.onSoundChange)
       # Amplitude plot.
       self.amplitude_plot = plot.Panel(self.column_frames[1],
-         width       = 400,
-         height      = 200,
+         width       = PLOT_WIDTH_PX,
+         height      = PLOT_HEIGHT_PX,
          x_axis      = self.sound_widget.time_axis,
          y_axis      = self.sound_widget.amplitude_axis,
          zoom_widget = self.zoom_widget,
@@ -593,7 +646,7 @@ class WaveformEditor:
          defaultextension = '.json',
          filetypes = (('{} format (*.json)'.format(PROGRAM_NAME), '.json'),))
       if path:
-         # TODO: Strip redundant elements on save (frequency and phase for noise).
+         # TODO: Strip redundant elements on save (frequency and phase for noise, curve for non-custom).
          with open(path, 'w') as f:
             json.dump(self.serialize(), f)
 
